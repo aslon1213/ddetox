@@ -5,20 +5,21 @@ enforces blocking) and an **unprivileged desktop GUI** (a thin view/controller).
 ```mermaid
 flowchart LR
     subgraph GUI
-      A[GUI<br/>(app/ddetox)<br/>Tauri v2 + SvelteKit<br/>unprivileged view/controller]
+      A[GUI&lt;br/&gt;app/ddetox&lt;br/&gt;Tauri v2 + SvelteKit&lt;br/&gt;unprivileged view/controller]
     end
     subgraph Daemon
-      B[blockerd (root)<br/>enforces pf/DNS,<br/>owns authoritative state]
+      B[blockerd root&lt;br/&gt;enforces pf/DNS,&lt;br/&gt;owns authoritative state]
     end
     subgraph Protocol
       P[protocol/]
     end
 
-    A -- "line-delimited JSON<br/>over Unix-domain socket<br/>req {v:1,...} / resp {ok:...}" --> B
+    A -- "line-delimited JSON&lt;br/&gt;over Unix-domain socket&lt;br/&gt;req {v:1,...} / resp {ok:...}" --> B
     B -- "response" --> A
     A -- "both depend on" --> P
     B -- "both depend on" --> P
 ```
+<sub>If diagram is missing, see source or open in a Markdown viewer with Mermaid support.</sub>
 <!-- end mermaid -->
 
 The **daemon is the source of truth.** The GUI never enforces anything and never
