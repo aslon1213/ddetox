@@ -68,9 +68,11 @@
 
 <style>
   .panel {
-    background: #161618;
-    border-radius: 10px;
-    padding: 1.1rem 1.2rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1.15rem 1.25rem;
+    box-shadow: var(--shadow);
   }
   .head {
     display: flex;

@@ -11,7 +11,7 @@
 
 use std::time::Duration;
 
-use protocol::{Envelope, Reply, Request, Status};
+use protocol::{Envelope, Reply, Request, Stats, Status};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
@@ -107,6 +107,13 @@ pub async fn request_status(path: &str, req: Request) -> Result<Status, IpcError
     let data = request(path, req).await?;
     serde_json::from_value(data)
         .map_err(|e| IpcError::Protocol(format!("status payload did not decode: {e}")))
+}
+
+/// Send `GetStats` (or any request whose `data` is a [`Stats`]) and decode it.
+pub async fn request_stats(path: &str, req: Request) -> Result<Stats, IpcError> {
+    let data = request(path, req).await?;
+    serde_json::from_value(data)
+        .map_err(|e| IpcError::Protocol(format!("stats payload did not decode: {e}")))
 }
 
 /// Send a mutating request; success is enough, the payload is discarded. A

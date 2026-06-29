@@ -7,17 +7,34 @@
 
 // A DNS label: 1–63 chars, alphanumeric with internal hyphens.
 const LABEL = "[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?";
-// A domain, with an optional leading "*." wildcard (e.g. "*.reddit.com").
-const DOMAIN_RE = new RegExp(`^(?:\\*\\.)?(?:${LABEL}\\.)+${LABEL}$`, "i");
+// A fully-qualified host (no mode prefix), e.g. "reddit.com".
+const HOST_RE = new RegExp(`^(?:${LABEL}\\.)+${LABEL}$`, "i");
 
 /**
- * Normalize and validate a domain (supports a leading `*.` wildcard).
- * Returns the lowercased domain, or `null` if invalid.
+ * Normalize and validate a blocklist domain, preserving an optional matching-mode
+ * prefix (mirrors the daemon's `normalize_domain`):
+ *
+ * - `=host`  — exact host only
+ * - `*.host` — subdomains only
+ * - `host`   — host + all subdomains (default)
+ *
+ * Returns the canonical lowercased entry, or `null` if invalid.
  */
 export function validateDomain(input: string): string | null {
-  const d = input.trim().toLowerCase().replace(/\.$/, "");
+  let d = input.trim().toLowerCase().replace(/\.$/, "");
+  if (!d) return null;
+
+  let prefix = "";
+  if (d.startsWith("=")) {
+    prefix = "=";
+    d = d.slice(1);
+  } else if (d.startsWith("*.")) {
+    prefix = "*.";
+    d = d.slice(2);
+  }
+
   if (!d || d.length > 253) return null;
-  return DOMAIN_RE.test(d) ? d : null;
+  return HOST_RE.test(d) ? prefix + d : null;
 }
 
 /**

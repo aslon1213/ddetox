@@ -152,11 +152,6 @@
     display: flex;
     gap: 0.5rem;
   }
-  .primary {
-    background: #1f5e38;
-    border-color: #2a7d4b;
-    color: #d8f3e4;
-  }
   .danger {
     margin-left: auto;
     background: #3a1717;

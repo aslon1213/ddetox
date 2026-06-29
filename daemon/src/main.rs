@@ -6,6 +6,7 @@
 //! system-wide to restore — the only resource owned here is the socket file,
 //! which is removed on every exit path including panic.
 
+mod block_page;
 mod dns;
 mod ipc;
 mod netconfig;
@@ -92,12 +93,28 @@ async fn run(
     // original DNS on every exit path (it drops when this function returns).
     let mut _dns_guard: Option<netconfig::DnsGuard> = None;
     if is_root {
+        // Block-page server on loopback :80. If it binds, blocked names resolve
+        // to loopback so the browser shows the page; otherwise we fall back to
+        // NXDOMAIN for blocked names.
+        let block_page = match block_page::bind(SocketAddr::from(([127, 0, 0, 1], 80))).await {
+            Ok(http) => {
+                tokio::spawn(block_page::serve(http));
+                info!("block page served on 127.0.0.1:80");
+                true
+            }
+            Err(e) => {
+                warn!(error = %e, "could not bind 127.0.0.1:80; block page disabled (NXDOMAIN fallback)");
+                false
+            }
+        };
+        state.set_block_page_active(block_page);
+
         let dns_addr = SocketAddr::from(([127, 0, 0, 1], 53));
         match dns::bind(dns_addr).await {
             Ok(listeners) => {
                 let upstream = netconfig::capture_upstream();
                 let dns_state = Arc::clone(&state);
-                tokio::spawn(async move { listeners.serve(dns_state, upstream).await });
+                tokio::spawn(async move { listeners.serve(dns_state, upstream, block_page).await });
                 if capture_dns {
                     _dns_guard = Some(netconfig::capture_and_redirect());
                     info!("system DNS redirected to the sinkhole (restored on exit)");

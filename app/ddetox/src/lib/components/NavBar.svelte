@@ -1,8 +1,10 @@
 <script lang="ts">
   import { page } from "$app/stores";
+  import BrandMark from "$lib/components/BrandMark.svelte";
 
   const links = [
     { href: "/", label: "Status" },
+    { href: "/stats", label: "Statistics" },
     { href: "/library", label: "Library" },
     { href: "/sessions", label: "Sessions" },
     { href: "/calendar", label: "Calendar" },
@@ -12,7 +14,10 @@
 </script>
 
 <nav class="nav">
-  <span class="brand">Blocker</span>
+  <a class="brand" href="/" aria-label="Blocker — Status">
+    <BrandMark size={26} />
+    <span class="wordmark">Blocker</span>
+  </a>
   <div class="links">
     {#each links as link (link.href)}
       <a
@@ -30,34 +35,52 @@
     display: flex;
     align-items: center;
     gap: 1.5rem;
-    padding: 0.7rem 1.5rem;
-    border-bottom: 1px solid #1f1f22;
-    background: #111113;
+    padding: 0.6rem 1.25rem;
+    border-bottom: 1px solid var(--border);
+    background: rgba(13, 14, 19, 0.8);
+    backdrop-filter: blur(10px);
     position: sticky;
     top: 0;
     z-index: 10;
   }
   .brand {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    text-decoration: none;
+    color: var(--text);
+  }
+  .wordmark {
     font-weight: 700;
-    letter-spacing: 0.02em;
+    font-size: 1.02rem;
+    letter-spacing: -0.01em;
+    background: var(--accent-grad);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
   }
   .links {
     display: flex;
-    gap: 0.4rem;
+    gap: 0.25rem;
+    margin-left: auto;
+    flex-wrap: wrap;
   }
   .links a {
-    color: #b6b6ba;
+    color: var(--text-dim);
     text-decoration: none;
-    padding: 0.35rem 0.7rem;
-    border-radius: 6px;
-    font-size: 0.92rem;
+    padding: 0.38rem 0.7rem;
+    border-radius: var(--radius-sm);
+    font-size: 0.9rem;
+    transition:
+      background 0.12s ease,
+      color 0.12s ease;
   }
   .links a:hover {
-    background: #1c1c1f;
-    color: #e6e6e8;
+    background: var(--surface-2);
+    color: var(--text);
   }
   .links a.active {
-    background: #1b2a4a;
-    color: #cfe0ff;
+    background: var(--accent-soft);
+    color: var(--accent-soft-text);
   }
 </style>

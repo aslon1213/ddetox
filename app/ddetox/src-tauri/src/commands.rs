@@ -9,7 +9,7 @@
 //! these snake_case parameters (`until_unix`).
 
 use protocol::config::{Session, WebsiteItem};
-use protocol::{Request, Status};
+use protocol::{Request, Stats, Status};
 
 use crate::ipc_client::{self, IpcError};
 use crate::scheduler::{self, ScheduleState};
@@ -23,6 +23,13 @@ fn surface(e: IpcError) -> String {
 #[tauri::command]
 pub async fn get_status(state: tauri::State<'_, AppState>) -> Result<Status, String> {
     ipc_client::request_status(&state.socket_path, Request::GetStatus)
+        .await
+        .map_err(surface)
+}
+
+#[tauri::command]
+pub async fn get_stats(state: tauri::State<'_, AppState>) -> Result<Stats, String> {
+    ipc_client::request_stats(&state.socket_path, Request::GetStats)
         .await
         .map_err(surface)
 }

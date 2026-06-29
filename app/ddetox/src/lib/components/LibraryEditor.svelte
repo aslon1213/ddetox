@@ -113,8 +113,13 @@
       <input placeholder="e.g. Reddit" bind:value={label} />
     </label>
     <label>
-      Domains <span class="hint">one per line; <code>*.</code> wildcards ok</span>
-      <textarea rows="3" placeholder={"reddit.com\n*.reddit.com"} bind:value={domainsText}></textarea>
+      Domains
+      <span class="hint">one per line; <code>*.</code> subdomains, <code>=</code> exact</span>
+      <textarea
+        rows="3"
+        placeholder={"reddit.com\n*.reddit.com\n=old.reddit.com"}
+        bind:value={domainsText}
+      ></textarea>
     </label>
     <label>
       Addresses (CIDR) <span class="hint">one per line; optional</span>
@@ -167,16 +172,18 @@
     margin: 0 0 0.8rem;
   }
   .editor {
-    background: #161618;
-    border-radius: 10px;
-    padding: 1.1rem 1.2rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1.15rem 1.25rem;
+    box-shadow: var(--shadow);
     position: sticky;
     top: 4rem;
   }
   label {
     display: block;
     font-size: 0.85rem;
-    color: #b6b6ba;
+    color: var(--text-dim);
     margin-bottom: 0.8rem;
   }
   label input,
@@ -188,19 +195,19 @@
     resize: vertical;
   }
   .hint {
-    color: #6f6f73;
+    color: var(--text-faint);
+  }
+  .hint code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.76rem;
+    color: var(--accent-soft-text);
   }
   .actions {
     display: flex;
     gap: 0.5rem;
   }
-  .primary {
-    background: #1f5e38;
-    border-color: #2a7d4b;
-    color: #d8f3e4;
-  }
   .error {
-    color: #ff9b9b;
+    color: var(--bad-text);
     font-size: 0.82rem;
     margin: 0 0 0.6rem;
   }
@@ -214,25 +221,25 @@
     justify-content: space-between;
     gap: 0.8rem;
     padding: 0.7rem 0.9rem;
-    background: #1a1a1c;
-    border-radius: 8px;
-    border: 1px solid transparent;
+    background: var(--surface);
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
   }
   .row.editing {
-    border-color: #3a5b9a;
+    border-color: var(--accent);
   }
   .label {
     font-weight: 600;
   }
   .sub {
     font-size: 0.78rem;
-    color: #8a8a8e;
+    color: var(--text-dim);
     margin-top: 0.1rem;
   }
   .entries {
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     font-size: 0.78rem;
-    color: #9a9a9e;
+    color: var(--text-faint);
     margin-top: 0.3rem;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -246,6 +253,6 @@
     flex: 0 0 auto;
   }
   .muted {
-    color: #8a8a8e;
+    color: var(--text-dim);
   }
 </style>

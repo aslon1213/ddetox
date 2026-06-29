@@ -42,6 +42,8 @@ pub fn socket_path() -> String {
 #[serde(tag = "cmd")]
 pub enum Request {
     GetStatus,
+    /// Blocking statistics (see [`Stats`]).
+    GetStats,
     AddDomains { domains: Vec<String> },
     RemoveDomains { domains: Vec<String> },
     AddAddrs { cidrs: Vec<String> },
@@ -141,10 +143,49 @@ pub struct Status {
     pub privileged: bool,
     pub blocked_domains: u64,
     pub blocked_cidrs: u64,
+    /// Whether blocked names resolve to the loopback block page (vs. NXDOMAIN).
+    /// Defaulted for compatibility with daemons that predate this field.
+    #[serde(default)]
+    pub block_page: bool,
     /// Active session details, or `null`. Shape is daemon-defined; opaque until
     /// the daemon implements sessions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<serde_json::Value>,
+}
+
+/// `GetStats` payload — a snapshot of blocking activity since the daemon started.
+/// Counts reset on daemon restart (enforcement only runs while it is up).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Stats {
+    /// When collection started (daemon start), seconds since the epoch.
+    pub since_unix: i64,
+    /// Total blocked DNS queries since `since_unix`.
+    pub total_blocked: u64,
+    /// Distinct blocklist entries hit at least once.
+    pub unique_domains: u64,
+    /// Most-hit entries, descending.
+    #[serde(default)]
+    pub top: Vec<DomainStat>,
+    /// Most recent blocked queries, newest first.
+    #[serde(default)]
+    pub recent: Vec<RecentBlock>,
+}
+
+/// One row of the "top blocked" table.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DomainStat {
+    /// The blocklist entry that matched, in stored form (e.g. `*.ads.com`).
+    pub entry: String,
+    pub count: u64,
+}
+
+/// One entry of the "recent activity" feed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecentBlock {
+    /// The queried name that was blocked.
+    pub name: String,
+    /// When it was blocked, seconds since the epoch.
+    pub unix: i64,
 }
 
 /// Payload of a successful add/remove mutation.

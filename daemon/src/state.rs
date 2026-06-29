@@ -7,13 +7,20 @@
 //!
 //! Enforcement (pf / DNS) is **not** wired here yet — M2 only owns the truth.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use tracing::info;
 
 use crate::persist::Store;
+
+/// How many recent blocked queries to retain for the statistics view.
+const RECENT_CAP: usize = 50;
+/// How many top entries to report in a stats snapshot.
+const TOP_CAP: usize = 20;
 
 /// An active blocking session. Stored from M5; in M2 it is only ever read back
 /// from persistence (no command sets it yet).
@@ -39,6 +46,48 @@ pub struct MutationResult {
     pub total: usize,
 }
 
+/// One blocked query, as shown in the statistics "recent activity" feed.
+#[derive(Debug, Clone, Serialize)]
+pub struct RecentBlock {
+    /// The fully-qualified name that was queried (lowercased, no trailing dot).
+    pub name: String,
+    /// When it was blocked (seconds since the Unix epoch).
+    pub unix: i64,
+}
+
+/// Per-entry hit count for the statistics "top blocked" view.
+#[derive(Debug, Clone, Serialize)]
+pub struct DomainStat {
+    /// The blocklist entry that matched (in its stored form, e.g. `*.ads.com`).
+    pub entry: String,
+    pub count: u64,
+}
+
+/// A point-in-time copy of blocking statistics for `GetStats`.
+#[derive(Debug, Clone, Serialize)]
+pub struct StatsSnapshot {
+    /// When stat collection started (daemon start), seconds since the epoch.
+    pub since_unix: i64,
+    /// Total blocked DNS queries since `since_unix`.
+    pub total_blocked: u64,
+    /// Number of distinct blocklist entries that have been hit at least once.
+    pub unique_domains: u64,
+    /// Most-hit entries, descending (capped at [`TOP_CAP`]).
+    pub top: Vec<DomainStat>,
+    /// Most recent blocked queries, newest first (capped at [`RECENT_CAP`]).
+    pub recent: Vec<RecentBlock>,
+}
+
+/// In-memory blocking statistics. Reset on restart (enforcement only runs while
+/// the daemon is up), kept cheap so recording a hit never stalls a DNS reply.
+#[derive(Default)]
+struct Stats {
+    since_unix: i64,
+    total: u64,
+    per_entry: HashMap<String, u64>,
+    recent: VecDeque<RecentBlock>,
+}
+
 /// Errors from state mutations.
 #[derive(thiserror::Error, Debug)]
 pub enum StateError {
@@ -57,11 +106,15 @@ fn invalid(msg: impl Into<String>) -> StateError {
 /// Thread-safe owner of the authoritative state.
 pub struct StateManager {
     inner: Mutex<Inner>,
+    /// Whether the loopback block-page server is serving (set once at startup).
+    /// Surfaced in `GetStatus` so the GUI can show how blocks are presented.
+    block_page: AtomicBool,
 }
 
 struct Inner {
     snapshot: Snapshot,
     store: Store,
+    stats: Stats,
 }
 
 impl StateManager {
@@ -74,7 +127,21 @@ impl StateManager {
             session = snapshot.session.is_some(),
             "loaded persisted state"
         );
-        Ok(Self { inner: Mutex::new(Inner { snapshot, store }) })
+        let stats = Stats { since_unix: now_unix(), ..Stats::default() };
+        Ok(Self {
+            inner: Mutex::new(Inner { snapshot, store, stats }),
+            block_page: AtomicBool::new(false),
+        })
+    }
+
+    /// Record whether the loopback block-page server bound successfully.
+    pub fn set_block_page_active(&self, active: bool) {
+        self.block_page.store(active, Ordering::Relaxed);
+    }
+
+    /// Whether blocked domains resolve to the loopback block page (vs. NXDOMAIN).
+    pub fn block_page_active(&self) -> bool {
+        self.block_page.load(Ordering::Relaxed)
     }
 
     /// Lock the state, recovering from a poisoned mutex so one panicked
@@ -88,11 +155,42 @@ impl StateManager {
         self.lock().snapshot.clone()
     }
 
-    /// Whether a DNS query name should be sinkholed, per the current blocklist.
-    /// A stored entry blocks its apex and any subdomain; a `*.` prefix is
-    /// matched the same way (so `*.d` and `d` both cover `d` and `sub.d`).
-    pub fn is_blocked(&self, qname: &str) -> bool {
-        name_matches(&self.lock().snapshot.domains, qname)
+    /// Evaluate a DNS query against the blocklist and, if blocked, record the hit
+    /// for statistics. Returns the matching blocklist entry (in stored form).
+    ///
+    /// This is the hot path on every DNS lookup, so it takes the state lock once
+    /// and does only cheap bookkeeping under it.
+    pub fn on_query(&self, qname: &str) -> Option<String> {
+        let mut g = self.lock();
+        let entry = matching_entry(&g.snapshot.domains, qname)?.to_string();
+        let name = normalize_query(qname);
+        let stats = &mut g.stats;
+        stats.total += 1;
+        *stats.per_entry.entry(entry.clone()).or_insert(0) += 1;
+        stats.recent.push_front(RecentBlock { name, unix: now_unix() });
+        stats.recent.truncate(RECENT_CAP);
+        Some(entry)
+    }
+
+    /// A consistent copy of current blocking statistics, for `GetStats`.
+    pub fn stats_snapshot(&self) -> StatsSnapshot {
+        let g = self.lock();
+        let s = &g.stats;
+        let mut top: Vec<DomainStat> = s
+            .per_entry
+            .iter()
+            .map(|(entry, count)| DomainStat { entry: entry.clone(), count: *count })
+            .collect();
+        // Highest count first; ties broken by entry name for a stable order.
+        top.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.entry.cmp(&b.entry)));
+        top.truncate(TOP_CAP);
+        StatsSnapshot {
+            since_unix: s.since_unix,
+            total_blocked: s.total,
+            unique_domains: s.per_entry.len() as u64,
+            top,
+            recent: s.recent.iter().cloned().collect(),
+        }
     }
 
     pub fn add_domains(&self, raw: &[String]) -> Result<MutationResult, StateError> {
@@ -170,17 +268,43 @@ impl StateManager {
     }
 }
 
-/// Whether `qname` is covered by any entry in `domains`. An entry `d` (or `*.d`)
-/// matches the apex `d` and any subdomain `sub.d`. Case- and trailing-dot-insensitive.
-fn name_matches(domains: &BTreeSet<String>, qname: &str) -> bool {
-    let name = qname.trim().trim_end_matches('.').to_ascii_lowercase();
+/// Canonicalize a query name for matching: trimmed, lowercased, no trailing dot.
+fn normalize_query(qname: &str) -> String {
+    qname.trim().trim_end_matches('.').to_ascii_lowercase()
+}
+
+/// Seconds since the Unix epoch (saturating to 0 on a pre-1970 clock).
+fn now_unix() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// The first blocklist entry that covers `qname`, if any. `qname` must already be
+/// normalized via [`normalize_query`].
+fn matching_entry<'a>(domains: &'a BTreeSet<String>, qname: &str) -> Option<&'a String> {
+    let name = normalize_query(qname);
     if name.is_empty() {
-        return false;
+        return None;
     }
-    domains.iter().any(|entry| {
-        let base = entry.strip_prefix("*.").unwrap_or(entry);
-        name == base || name.ends_with(&format!(".{base}"))
-    })
+    domains.iter().find(|entry| entry_matches(entry, &name))
+}
+
+/// Whether a single stored `entry` matches the already-normalized `name`,
+/// honoring the entry's matching mode:
+///
+/// - `=host`  — **exact**: matches only `host` itself, never a subdomain.
+/// - `*.host` — **subdomains only**: matches `sub.host` (any depth) but not `host`.
+/// - `host`   — **host + subdomains**: matches `host` and any `sub.host`.
+fn entry_matches(entry: &str, name: &str) -> bool {
+    if let Some(exact) = entry.strip_prefix('=') {
+        name == exact
+    } else if let Some(base) = entry.strip_prefix("*.") {
+        name.ends_with(&format!(".{base}"))
+    } else {
+        name == entry || name.ends_with(&format!(".{entry}"))
+    }
 }
 
 /// Validate and canonicalize every entry, rejecting the whole batch on the first
@@ -200,14 +324,22 @@ where
     Ok(out)
 }
 
-/// Canonicalize a domain: lowercase, drop a trailing dot, allow an optional
-/// `*.` wildcard prefix, and require a syntactically valid FQDN.
+/// Canonicalize a domain: lowercase, drop a trailing dot, and require a
+/// syntactically valid FQDN. An optional matching-mode prefix is preserved:
+/// `=` (exact host) or `*.` (subdomains only); bare entries match host +
+/// subdomains. See [`entry_matches`].
 fn normalize_domain(raw: &str) -> Result<String, StateError> {
     let s = raw.trim().trim_end_matches('.').to_ascii_lowercase();
     if s.is_empty() {
         return Err(invalid("empty domain"));
     }
-    let host = s.strip_prefix("*.").unwrap_or(s.as_str());
+    let (prefix, host) = if let Some(rest) = s.strip_prefix('=') {
+        ("=", rest)
+    } else if let Some(rest) = s.strip_prefix("*.") {
+        ("*.", rest)
+    } else {
+        ("", s.as_str())
+    };
     if host.is_empty() || host.len() > 253 {
         return Err(invalid(format!("invalid domain '{raw}'")));
     }
@@ -224,7 +356,7 @@ fn normalize_domain(raw: &str) -> Result<String, StateError> {
             return Err(invalid(format!("invalid domain '{raw}'")));
         }
     }
-    Ok(s)
+    Ok(format!("{prefix}{host}"))
 }
 
 /// Canonicalize a CIDR to its network form (host bits zeroed) so equivalent
@@ -245,11 +377,16 @@ mod tests {
     fn domain_canonicalization() {
         assert_eq!(normalize_domain("YouTube.com.").unwrap(), "youtube.com");
         assert_eq!(normalize_domain("  *.Reddit.COM ").unwrap(), "*.reddit.com");
+        assert_eq!(normalize_domain(" =News.Example.com ").unwrap(), "=news.example.com");
     }
 
     #[test]
     fn domain_rejections() {
-        for bad in ["", "localhost", "no_dot_here", "a..b.com", "-bad.com", "bad-.com"] {
+        // Including bare/dangling mode prefixes and single-label wildcards.
+        for bad in [
+            "", "localhost", "no_dot_here", "a..b.com", "-bad.com", "bad-.com", "*.com", "=com",
+            "*.", "=",
+        ] {
             assert!(normalize_domain(bad).is_err(), "should reject {bad:?}");
         }
     }
@@ -273,23 +410,63 @@ mod tests {
         assert!(normalize_all(&[], normalize_domain).is_err());
     }
 
-    #[test]
-    fn name_matching_covers_apex_subdomains_and_wildcards() {
-        let mut d = BTreeSet::new();
-        d.insert("tauri.app".to_string());
-        d.insert("*.reddit.com".to_string());
+    /// Convenience: does any entry in `d` cover `name`?
+    fn blocks(d: &BTreeSet<String>, name: &str) -> bool {
+        matching_entry(d, name).is_some()
+    }
 
-        // Apex entry covers the apex and its subdomains, case/dot-insensitive.
-        assert!(name_matches(&d, "tauri.app"));
-        assert!(name_matches(&d, "www.tauri.app"));
-        assert!(name_matches(&d, "TAURI.APP."));
-        // Wildcard entry covers the base and its subdomains.
-        assert!(name_matches(&d, "reddit.com"));
-        assert!(name_matches(&d, "old.reddit.com"));
+    #[test]
+    fn name_matching_honors_per_entry_modes() {
+        let mut d = BTreeSet::new();
+        d.insert("tauri.app".to_string()); // host + subdomains
+        d.insert("*.reddit.com".to_string()); // subdomains only
+        d.insert("=news.example.com".to_string()); // exact host only
+
+        // Bare entry covers the apex and its subdomains, case/dot-insensitive.
+        assert!(blocks(&d, "tauri.app"));
+        assert!(blocks(&d, "www.tauri.app"));
+        assert!(blocks(&d, "a.b.tauri.app"));
+        assert!(blocks(&d, "TAURI.APP."));
+
+        // Wildcard covers subdomains at any depth, but NOT the apex.
+        assert!(blocks(&d, "old.reddit.com"));
+        assert!(blocks(&d, "i.redd.reddit.com"));
+        assert!(!blocks(&d, "reddit.com"));
+
+        // Exact covers only the host itself, never a subdomain.
+        assert!(blocks(&d, "news.example.com"));
+        assert!(!blocks(&d, "sport.news.example.com"));
+        assert!(!blocks(&d, "example.com"));
+
         // Non-matches: not on a label boundary, different TLD, empty.
-        assert!(!name_matches(&d, "nottauri.app"));
-        assert!(!name_matches(&d, "tauri.apps"));
-        assert!(!name_matches(&d, "example.com"));
-        assert!(!name_matches(&d, ""));
+        assert!(!blocks(&d, "nottauri.app"));
+        assert!(!blocks(&d, "tauri.apps"));
+        assert!(!blocks(&d, "other.com"));
+        assert!(!blocks(&d, ""));
+    }
+
+    #[test]
+    fn on_query_records_stats_for_blocked_only() {
+        let dir = std::env::temp_dir()
+            .join(format!("blockerd-stats-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&dir);
+        let mgr = StateManager::new(Store::open(&dir).unwrap()).unwrap();
+        mgr.add_domains(&["ads.com".into(), "*.track.net".into()]).unwrap();
+
+        assert_eq!(mgr.on_query("ads.com").as_deref(), Some("ads.com"));
+        assert_eq!(mgr.on_query("x.ads.com").as_deref(), Some("ads.com"));
+        assert_eq!(mgr.on_query("a.track.net").as_deref(), Some("*.track.net"));
+        assert!(mgr.on_query("allowed.com").is_none()); // not blocked → no hit
+
+        let s = mgr.stats_snapshot();
+        assert_eq!(s.total_blocked, 3);
+        assert_eq!(s.unique_domains, 2);
+        // Most-hit entry first.
+        assert_eq!(s.top[0].entry, "ads.com");
+        assert_eq!(s.top[0].count, 2);
+        // Newest recent first.
+        assert_eq!(s.recent[0].name, "a.track.net");
+
+        let _ = std::fs::remove_file(&dir);
     }
 }

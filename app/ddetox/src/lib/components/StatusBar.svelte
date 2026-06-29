@@ -40,6 +40,11 @@
       <span class="badge" class:warn={!status.privileged}>
         {status.privileged ? "root" : "unprivileged"}
       </span>
+      {#if status.block_page}
+        <span class="badge page" title="Blocked sites resolve to a local block page">
+          block page
+        </span>
+      {/if}
 
       {#if status.session}
         <span class="session">
@@ -89,26 +94,26 @@
     flex: 0 0 auto;
   }
   .offline {
-    background: #3a1212;
-    color: #ffb4b4;
+    background: var(--bad-soft);
+    color: var(--bad-text);
   }
   .offline .dot {
-    background: #ff5c5c;
+    background: var(--bad);
     animation: pulse 1s infinite;
   }
   .online {
-    background: #0f2a17;
-    color: #9be7b4;
+    background: var(--good-soft);
+    color: var(--good-text);
   }
   .online .dot {
-    background: #36d27a;
+    background: var(--good);
   }
   .connecting {
-    background: #1d1d1f;
-    color: #9a9a9e;
+    background: var(--surface-2);
+    color: var(--text-dim);
   }
   .connecting .dot {
-    background: #6a6a6e;
+    background: var(--text-faint);
   }
   .meta {
     opacity: 0.8;
@@ -118,14 +123,18 @@
     text-transform: uppercase;
     font-size: 0.68rem;
     letter-spacing: 0.05em;
-    padding: 0.1rem 0.4rem;
-    border-radius: 4px;
+    padding: 0.12rem 0.42rem;
+    border-radius: 5px;
     background: #1f5e38;
     color: #cfeede;
   }
   .badge.warn {
     background: #5e4a1f;
     color: #efe0b8;
+  }
+  .badge.page {
+    background: var(--accent-soft);
+    color: var(--accent-soft-text);
   }
   .session {
     margin-left: auto;

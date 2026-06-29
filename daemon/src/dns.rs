@@ -1,8 +1,13 @@
-//! DNS sinkhole: a tiny resolver on `127.0.0.1:53` that answers **NXDOMAIN** for
-//! blocked names and **relays everything else** to an upstream resolver.
+//! DNS sinkhole: a tiny resolver on `127.0.0.1:53` that intercepts blocked names
+//! and **relays everything else** to an upstream resolver.
+//!
+//! A blocked name is answered one of two ways:
+//! - if the loopback **block page** server is up, `A`/`AAAA` queries resolve to
+//!   loopback (`127.0.0.1` / `::1`) so the browser lands on the block page;
+//! - otherwise (or for other record types) it gets **NXDOMAIN**.
 //!
 //! The DNS message handling is hand-rolled rather than pulling a full DNS crate:
-//! we only need to read the question name and synthesize an NXDOMAIN, and
+//! we only need the question name + type to synthesize a small answer, and
 //! non-blocked queries are forwarded as opaque bytes, so every record type and
 //! flag passes through untouched. The blocklist is read live from
 //! [`StateManager`], so GUI edits take effect on the next query.
@@ -18,6 +23,13 @@ use crate::state::StateManager;
 
 /// Upstream query timeout. Kept short so a dead resolver fails fast.
 const UPSTREAM_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// DNS record types we synthesize answers for.
+const QTYPE_A: u16 = 1;
+const QTYPE_AAAA: u16 = 28;
+
+/// TTL for synthesized block answers. Short so un-blocking takes effect quickly.
+const BLOCK_TTL_SECS: u32 = 30;
 
 /// Bound UDP + TCP listeners on `:53`, ready to serve. Splitting bind from serve
 /// lets the caller confirm `:53` is ours *before* repointing system DNS at it.
@@ -36,17 +48,23 @@ pub async fn bind(addr: SocketAddr) -> std::io::Result<Listeners> {
 
 impl Listeners {
     /// Serve forever. `upstream` is the list of real resolvers (captured before we
-    /// hijacked system DNS) to forward non-blocked queries to.
-    pub async fn serve(self, state: Arc<StateManager>, upstream: Vec<SocketAddr>) {
-        tracing::info!(upstream = ?upstream, "DNS sinkhole serving");
+    /// hijacked system DNS) to forward non-blocked queries to. When `block_page`
+    /// is set, blocked `A`/`AAAA` queries resolve to loopback instead of NXDOMAIN.
+    pub async fn serve(self, state: Arc<StateManager>, upstream: Vec<SocketAddr>, block_page: bool) {
+        tracing::info!(upstream = ?upstream, block_page, "DNS sinkhole serving");
         tokio::join!(
-            serve_udp(self.udp, Arc::clone(&state), upstream.clone()),
-            serve_tcp(self.tcp, state, upstream),
+            serve_udp(self.udp, Arc::clone(&state), upstream.clone(), block_page),
+            serve_tcp(self.tcp, state, upstream, block_page),
         );
     }
 }
 
-async fn serve_udp(sock: Arc<UdpSocket>, state: Arc<StateManager>, upstream: Vec<SocketAddr>) {
+async fn serve_udp(
+    sock: Arc<UdpSocket>,
+    state: Arc<StateManager>,
+    upstream: Vec<SocketAddr>,
+    block_page: bool,
+) {
     let mut buf = vec![0u8; 4096];
     loop {
         let (len, peer) = match sock.recv_from(&mut buf).await {
@@ -61,7 +79,7 @@ async fn serve_udp(sock: Arc<UdpSocket>, state: Arc<StateManager>, upstream: Vec
         let state = Arc::clone(&state);
         let upstream = upstream.clone();
         tokio::spawn(async move {
-            let resp = match decide(&req, &state) {
+            let resp = match decide(&req, &state, block_page) {
                 Some(nx) => Some(nx),
                 None => forward_udp(&req, &upstream).await,
             };
@@ -72,7 +90,12 @@ async fn serve_udp(sock: Arc<UdpSocket>, state: Arc<StateManager>, upstream: Vec
     }
 }
 
-async fn serve_tcp(listener: TcpListener, state: Arc<StateManager>, upstream: Vec<SocketAddr>) {
+async fn serve_tcp(
+    listener: TcpListener,
+    state: Arc<StateManager>,
+    upstream: Vec<SocketAddr>,
+    block_page: bool,
+) {
     loop {
         let (stream, _) = match listener.accept().await {
             Ok(v) => v,
@@ -83,11 +106,16 @@ async fn serve_tcp(listener: TcpListener, state: Arc<StateManager>, upstream: Ve
         };
         let state = Arc::clone(&state);
         let upstream = upstream.clone();
-        tokio::spawn(handle_tcp(stream, state, upstream));
+        tokio::spawn(handle_tcp(stream, state, upstream, block_page));
     }
 }
 
-async fn handle_tcp(mut stream: TcpStream, state: Arc<StateManager>, upstream: Vec<SocketAddr>) {
+async fn handle_tcp(
+    mut stream: TcpStream,
+    state: Arc<StateManager>,
+    upstream: Vec<SocketAddr>,
+    block_page: bool,
+) {
     loop {
         // DNS over TCP frames each message with a 2-byte big-endian length.
         let mut len_buf = [0u8; 2];
@@ -100,7 +128,7 @@ async fn handle_tcp(mut stream: TcpStream, state: Arc<StateManager>, upstream: V
             return;
         }
 
-        let resp = match decide(&req, &state) {
+        let resp = match decide(&req, &state, block_page) {
             Some(nx) => Some(nx),
             None => forward_tcp(&req, &upstream).await,
         };
@@ -116,22 +144,25 @@ async fn handle_tcp(mut stream: TcpStream, state: Arc<StateManager>, upstream: V
     }
 }
 
-/// Decide what to do with a request: `Some(nxdomain_bytes)` to sinkhole it, or
-/// `None` to forward upstream. Unparseable requests forward (fail open).
-fn decide(req: &[u8], state: &StateManager) -> Option<Vec<u8>> {
-    let (name, qend) = parse_question(req)?;
-    if state.is_blocked(&name) {
+/// Decide what to do with a request: `Some(bytes)` to answer it ourselves
+/// (block page redirect or NXDOMAIN), or `None` to forward upstream. Unparseable
+/// requests forward (fail open). Blocked queries are recorded for statistics.
+fn decide(req: &[u8], state: &StateManager, block_page: bool) -> Option<Vec<u8>> {
+    let (name, qend, qtype) = parse_question(req)?;
+    state.on_query(&name)?; // None (not blocked) -> forward upstream
+    if block_page && (qtype == QTYPE_A || qtype == QTYPE_AAAA) {
+        tracing::info!(query = %name, "sinkholed → block page (loopback)");
+        Some(build_address_answer(req, qend, qtype))
+    } else {
         tracing::info!(query = %name, "sinkholed → NXDOMAIN");
         Some(build_nxdomain(req, qend))
-    } else {
-        None
     }
 }
 
-/// Parse the first question's name and return it plus the byte offset just past
-/// the question section. The question name is never compressed, so this is a
+/// Parse the first question's name, the byte offset just past the question
+/// section, and the QTYPE. The question name is never compressed, so this is a
 /// straight label walk. Returns `None` on a malformed or question-less message.
-fn parse_question(msg: &[u8]) -> Option<(String, usize)> {
+fn parse_question(msg: &[u8]) -> Option<(String, usize, u16)> {
     if msg.len() < 12 {
         return None;
     }
@@ -157,11 +188,46 @@ fn parse_question(msg: &[u8]) -> Option<(String, usize)> {
         pos += len;
     }
     // QTYPE (2) + QCLASS (2)
-    if pos + 4 > msg.len() {
+    let qtype_bytes = msg.get(pos..pos + 2)?;
+    let qtype = u16::from_be_bytes([qtype_bytes[0], qtype_bytes[1]]);
+    pos += 4;
+    if pos > msg.len() {
         return None;
     }
-    pos += 4;
-    Some((labels.join(".").to_ascii_lowercase(), pos))
+    Some((labels.join(".").to_ascii_lowercase(), pos, qtype))
+}
+
+/// Build an answer that points a blocked name at loopback so the browser reaches
+/// the local block page: the request header + question, an `ANCOUNT` of 1, and a
+/// single `A`/`AAAA` record (compressed name pointer to the question) with RDATA
+/// `127.0.0.1` / `::1`.
+fn build_address_answer(req: &[u8], qend: usize, qtype: u16) -> Vec<u8> {
+    let mut resp = req[..qend].to_vec();
+    // byte 2: set QR, keep Opcode + RD, clear AA/TC.
+    let opcode = resp[2] & 0x78;
+    let rd = resp[2] & 0x01;
+    resp[2] = 0x80 | opcode | rd;
+    // byte 3: RA=1, RCODE=0 (NoError).
+    resp[3] = 0x80;
+    // QDCOUNT (4..6) stays 1; ANCOUNT (6..8) = 1; NS/AR (8..12) = 0.
+    resp[6] = 0x00;
+    resp[7] = 0x01;
+    for b in &mut resp[8..12] {
+        *b = 0;
+    }
+    // Answer RR: NAME = pointer to the question at offset 12.
+    resp.extend_from_slice(&[0xC0, 0x0C]);
+    resp.extend_from_slice(&qtype.to_be_bytes()); // TYPE
+    resp.extend_from_slice(&[0x00, 0x01]); // CLASS = IN
+    resp.extend_from_slice(&BLOCK_TTL_SECS.to_be_bytes()); // TTL
+    if qtype == QTYPE_AAAA {
+        resp.extend_from_slice(&[0x00, 0x10]); // RDLENGTH = 16
+        resp.extend_from_slice(&std::net::Ipv6Addr::LOCALHOST.octets());
+    } else {
+        resp.extend_from_slice(&[0x00, 0x04]); // RDLENGTH = 4
+        resp.extend_from_slice(&[127, 0, 0, 1]);
+    }
+    resp
 }
 
 /// Build an NXDOMAIN response: the request's header + question, with QR=1, RA=1,
@@ -249,11 +315,12 @@ mod tests {
     }
 
     #[test]
-    fn parses_question_name_and_offset() {
+    fn parses_question_name_offset_and_type() {
         let q = tauri_query();
-        let (name, qend) = parse_question(&q).unwrap();
+        let (name, qend, qtype) = parse_question(&q).unwrap();
         assert_eq!(name, "tauri.app");
         assert_eq!(qend, q.len()); // question is the whole message here
+        assert_eq!(qtype, QTYPE_A);
     }
 
     #[test]
@@ -264,7 +331,7 @@ mod tests {
     #[test]
     fn builds_nxdomain_flags_and_counts() {
         let q = tauri_query();
-        let (_, qend) = parse_question(&q).unwrap();
+        let (_, qend, _) = parse_question(&q).unwrap();
         let r = build_nxdomain(&q, qend);
         assert_eq!(r[0..2], q[0..2]); // id preserved
         assert_ne!(r[2] & 0x80, 0); // QR set
@@ -272,6 +339,22 @@ mod tests {
         assert_eq!(r[3] & 0x0F, 0x03); // RCODE = NXDOMAIN
         assert_eq!(u16::from_be_bytes([r[4], r[5]]), 1); // qdcount stays 1
         assert_eq!(&r[6..12], &[0u8; 6]); // an/ns/ar zeroed
+    }
+
+    #[test]
+    fn builds_a_answer_pointing_at_loopback() {
+        let q = tauri_query();
+        let (_, qend, qtype) = parse_question(&q).unwrap();
+        let r = build_address_answer(&q, qend, qtype);
+        assert_eq!(r[0..2], q[0..2]); // id preserved
+        assert_ne!(r[2] & 0x80, 0); // QR set
+        assert_eq!(r[3] & 0x0F, 0x00); // RCODE = NoError
+        assert_eq!(u16::from_be_bytes([r[4], r[5]]), 1); // qdcount
+        assert_eq!(u16::from_be_bytes([r[6], r[7]]), 1); // ancount
+        // The answer's final 4 RDATA bytes are 127.0.0.1.
+        assert_eq!(&r[r.len() - 4..], &[127, 0, 0, 1]);
+        // Name is the compression pointer to the question.
+        assert_eq!(&r[qend..qend + 2], &[0xC0, 0x0C]);
     }
 
     #[tokio::test]

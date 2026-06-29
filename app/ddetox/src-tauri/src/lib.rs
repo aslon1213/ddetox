@@ -9,6 +9,7 @@ mod commands;
 mod config_store;
 mod ipc_client;
 mod scheduler;
+mod tray;
 
 /// Application state held in Tauri's managed state: just where to find the daemon.
 pub struct AppState {
@@ -37,10 +38,22 @@ pub fn run() {
         .manage(AppState { socket_path })
         .setup(move |app| {
             scheduler::spawn(app.handle().clone(), scheduler_socket);
+            tray::create(app.handle())?;
             Ok(())
+        })
+        // Keep the app alive in the menu bar: closing the window hides it rather
+        // than quitting, so the scheduler keeps running. Quit from the tray menu.
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "main" {
+                    let _ = window.hide();
+                    api.prevent_close();
+                }
+            }
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_status,
+            commands::get_stats,
             commands::add_domains,
             commands::remove_domains,
             commands::add_addrs,

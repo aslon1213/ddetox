@@ -135,16 +135,11 @@
   }
   .lede {
     margin: 0;
-    color: #9a9a9e;
+    color: var(--text-dim);
     line-height: 1.5;
   }
-  .primary {
-    background: #1f5e38;
-    border-color: #2a7d4b;
-    color: #d8f3e4;
-  }
   .error {
-    color: #e6a23c;
+    color: var(--warn);
     font-size: 0.85rem;
     margin: 0;
   }
@@ -159,13 +154,13 @@
     justify-content: space-between;
     text-align: left;
     padding: 0.8rem 1rem;
-    background: #161618;
-    border: 1px solid #232327;
-    border-radius: 8px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
     width: 100%;
   }
   .row:hover {
-    border-color: #3a3a40;
+    border-color: var(--border-strong);
   }
   .name {
     font-weight: 600;
@@ -183,25 +178,25 @@
     color: #cfeede;
   }
   .badge.off {
-    background: #3a3a3e;
-    color: #b6b6ba;
+    background: var(--surface-3);
+    color: var(--text-dim);
   }
   .sub {
     font-size: 0.8rem;
-    color: #9a9a9e;
+    color: var(--text-dim);
     margin-top: 0.2rem;
   }
   .sched {
     font-size: 0.78rem;
-    color: #7a8aa8;
+    color: var(--accent);
     margin-top: 0.15rem;
   }
   .chev {
-    color: #6f6f73;
+    color: var(--text-faint);
     font-size: 0.85rem;
     flex: 0 0 auto;
   }
   .muted {
-    color: #8a8a8e;
+    color: var(--text-dim);
   }
 </style>

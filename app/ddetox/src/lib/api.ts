@@ -28,7 +28,35 @@ export interface Status {
   privileged: boolean;
   blocked_domains: number;
   blocked_cidrs: number;
+  /** Whether blocked names resolve to the loopback block page (vs. NXDOMAIN). */
+  block_page?: boolean;
   session: SessionInfo | null;
+}
+
+/** One row of the "top blocked" table (mirrors `protocol::DomainStat`). */
+export interface DomainStat {
+  /** The matching blocklist entry, in stored form (e.g. `*.ads.com`). */
+  entry: string;
+  count: number;
+}
+
+/** One "recent activity" entry (mirrors `protocol::RecentBlock`). */
+export interface RecentBlock {
+  name: string;
+  /** Seconds since the Unix epoch. */
+  unix: number;
+}
+
+/**
+ * Blocking statistics since the daemon started (mirrors `protocol::Stats`).
+ * Counts reset on daemon restart — enforcement only runs while it is up.
+ */
+export interface Stats {
+  since_unix: number;
+  total_blocked: number;
+  unique_domains: number;
+  top: DomainStat[];
+  recent: RecentBlock[];
 }
 
 /**
@@ -59,6 +87,14 @@ function normalize(e: unknown): never {
 export async function getStatus(): Promise<Status> {
   try {
     return await invoke<Status>("get_status");
+  } catch (e) {
+    normalize(e);
+  }
+}
+
+export async function getStats(): Promise<Stats> {
+  try {
+    return await invoke<Stats>("get_stats");
   } catch (e) {
     normalize(e);
   }

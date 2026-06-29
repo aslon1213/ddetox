@@ -14,7 +14,7 @@
 <style>
   .lede {
     margin: 0;
-    color: #9a9a9e;
+    color: var(--text-dim);
     line-height: 1.5;
   }
 </style>

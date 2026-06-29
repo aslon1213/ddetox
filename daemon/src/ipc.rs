@@ -102,6 +102,7 @@ fn dispatch(line: &str, state: &StateManager) -> Response {
 
     match command {
         Command::GetStatus => status_response(state),
+        Command::GetStats => stats_response(state),
         Command::AddDomains { domains } => mutation_response(state.add_domains(&domains)),
         Command::RemoveDomains { domains } => mutation_response(state.remove_domains(&domains)),
         Command::AddAddrs { cidrs } => mutation_response(state.add_cidrs(&cidrs)),
@@ -143,6 +144,7 @@ fn status_response(state: &StateManager) -> Response {
         privileged: nix::unistd::Uid::effective().is_root(),
         blocked_domains: snapshot.domains.len(),
         blocked_cidrs: snapshot.cidrs.len(),
+        block_page: state.block_page_active(),
         session: snapshot
             .session
             .map(|s| serde_json::to_value(s).unwrap_or(serde_json::Value::Null)),
@@ -150,5 +152,13 @@ fn status_response(state: &StateManager) -> Response {
     match serde_json::to_value(status) {
         Ok(v) => Response::ok(v),
         Err(e) => Response::error(format!("failed to encode status: {e}")),
+    }
+}
+
+/// Build a blocking-statistics snapshot from live state.
+fn stats_response(state: &StateManager) -> Response {
+    match serde_json::to_value(state.stats_snapshot()) {
+        Ok(v) => Response::ok(v),
+        Err(e) => Response::error(format!("failed to encode stats: {e}")),
     }
 }

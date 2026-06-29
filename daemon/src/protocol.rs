@@ -35,6 +35,7 @@ pub enum Command {
     StartSession { until_unix: i64, committed: bool },
     StopSession,
     GetStatus,
+    GetStats,
 }
 
 impl Command {
@@ -48,6 +49,7 @@ impl Command {
             Command::StartSession { .. } => "StartSession",
             Command::StopSession => "StopSession",
             Command::GetStatus => "GetStatus",
+            Command::GetStats => "GetStats",
         }
     }
 }
@@ -122,6 +124,8 @@ pub struct Status {
     pub blocked_domains: usize,
     /// Number of blocked CIDRs. Always 0 until the state store lands (M2).
     pub blocked_cidrs: usize,
+    /// Whether blocked names resolve to the loopback block page (vs. NXDOMAIN).
+    pub block_page: bool,
     /// Active session details, if any. Always `null` until sessions land (M5).
     pub session: Option<serde_json::Value>,
 }

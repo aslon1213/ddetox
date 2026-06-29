@@ -39,7 +39,8 @@
   async function onDomain(add: boolean) {
     const normalized = validateDomain(domainInput);
     if (!normalized) {
-      domainHint = "Enter a valid domain, e.g. example.com or *.example.com";
+      domainHint =
+        "Enter a valid domain: example.com, *.example.com (subdomains), or =example.com (exact)";
       return;
     }
     domainHint = null;
@@ -73,12 +74,12 @@
       }}
     >
       <input
-        placeholder="example.com or *.example.com"
+        placeholder="example.com · *.example.com · =example.com"
         bind:value={domainInput}
         oninput={() => (domainHint = null)}
         disabled={busy}
       />
-      <button type="submit" disabled={busy || !domainInput.trim()}>Add</button>
+      <button type="submit" class="primary" disabled={busy || !domainInput.trim()}>Add</button>
       <button
         type="button"
         class="ghost"
@@ -112,7 +113,7 @@
         oninput={() => (cidrHint = null)}
         disabled={busy}
       />
-      <button type="submit" disabled={busy || !cidrInput.trim()}>Add</button>
+      <button type="submit" class="primary" disabled={busy || !cidrInput.trim()}>Add</button>
       <button
         type="button"
         class="ghost"
@@ -129,9 +130,10 @@
   </div>
 
   <p class="note">
-    This daemon reports counts only — individual blocked entries aren't listed.
-    Type an entry and choose Add or Remove; the counts above refresh from the
-    daemon after each change.
+    Domain forms: <code>example.com</code> blocks the host and all subdomains,
+    <code>*.example.com</code> blocks subdomains only, and
+    <code>=example.com</code> blocks the exact host. The daemon reports counts
+    only — individual entries aren't listed; counts refresh after each change.
   </p>
 </section>
 
@@ -140,6 +142,11 @@
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 1.5rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1.15rem 1.25rem;
+    box-shadow: var(--shadow);
   }
   @media (max-width: 640px) {
     .editor {
@@ -158,7 +165,7 @@
   }
   .count {
     font-size: 0.8rem;
-    color: #8a8a8e;
+    color: var(--text-dim);
     font-variant-numeric: tabular-nums;
   }
   .addrow {
@@ -181,7 +188,15 @@
     grid-column: 1 / -1;
     margin: 0;
     font-size: 0.8rem;
-    color: #7a7a7e;
-    line-height: 1.4;
+    color: var(--text-faint);
+    line-height: 1.5;
+  }
+  .note code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.76rem;
+    color: var(--accent-soft-text);
+    background: var(--accent-soft);
+    padding: 0.05rem 0.3rem;
+    border-radius: 4px;
   }
 </style>
