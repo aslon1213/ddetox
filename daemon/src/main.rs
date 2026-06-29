@@ -44,17 +44,6 @@ fn main() {
         }
     };
 
-let runtime = match tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-    {
-        Ok(rt) => rt,
-        Err(e) => {
-            eprintln!("blockerd: failed to start tokio runtime: {e}");
-            std::process::exit(1);
-        }
-    };
-
 
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -89,8 +78,8 @@ async fn run(
     }
 
     ensure_state_dir(&state_path)?;
-    let store = persist::Store::open(&state_path)?;
-    let state = Arc::new(state::StateManager::new(store)?);
+    let store: persist::Store = persist::Store::open(&state_path)?;
+    let state: Arc<state::StateManager> = Arc::new(state::StateManager::new(store)?);
     info!(state = %state_path.display(), "opened state store");
 
     let listener = ipc::bind(&socket_path)?;
